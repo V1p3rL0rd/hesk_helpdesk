@@ -17,7 +17,7 @@ dnf update -y
 
 # Install EPEL repository
 echo "Installing EPEL repository..."
-dnf install -y epel-release
+dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
 
 # Install required packages
 echo "Installing required packages..."
