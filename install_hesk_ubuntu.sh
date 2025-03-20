@@ -1,116 +1,158 @@
 #!/bin/bash
 
-# Configuration parameters
-DOMAIN_NAME="example.com"
-MYSQL_ROOT_PASSWORD="dbroot_12345"
-HESK_DB_NAME="hesk"
-HESK_DB_USER="hesk"
-HESK_DB_PASSWORD="Hesk_12345"
-WEB_ROOT="/var/www/html"
-HESK_DIR="/var/www/html/hesk"
-SSL_CERT="/etc/ssl/certs/apache-selfsigned.crt"
-SSL_KEY="/etc/ssl/private/apache-selfsigned.key"
+# Check for root privileges
+if [ "$EUID" -ne 0 ]; then
+   echo "Warning! This script must be run as root!"
+   exit 1
+fi
 
-# System update
-echo "Updating system..."
-apt update
-apt upgrade -y
+# Configuration variables
+mysql_db="hesk"
+mysql_user="hesk"
+mysql_pass="hesk_password"
+mysql_root_pass=$(openssl rand -base64 24)
+apache_cert_dir="/etc/ssl"
+firewall_ports=("22/tcp" "443/tcp")
+
+# Check if HESK archive exists
+if [ ! -f hesk352.zip ]; then
+    echo "Error: hesk352.zip not found in current directory!"
+    echo "Please place hesk352.zip in the same directory as this script."
+    exit 1
+fi
+
+# Update system packages
+echo "Updating system packages..."
+apt update && apt upgrade -y
 
 # Install required packages
 echo "Installing required packages..."
-apt install -y apache2 mysql-server php php-mysql libapache2-mod-php openssl \
-    php-cli php-curl php-gd php-mbstring php-xml php-xmlrpc unzip phpmyadmin
+apt install -y apache2 mysql-server php php-mysql php-gd php-xml php-bcmath \
+    php-mbstring php-ldap php-zip libapache2-mod-php unzip
 
-# Enable Apache modules
-echo "Enabling Apache modules..."
-a2enmod ssl rewrite
+# Create web root directory
+echo "Creating web root directory..."
+mkdir -p /var/www/html
+chown www-data:www-data /var/www/html
+chmod 755 /var/www/html
 
-# Create self-signed SSL certificate
-echo "Creating SSL certificate..."
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-    -keyout "$SSL_KEY" -out "$SSL_CERT" \
-    -subj "/CN=$DOMAIN_NAME"
+# Start MySQL
+echo "Starting MySQL service..."
+systemctl enable --now mysql
 
-# Configure Apache
-echo "Configuring Apache..."
-cat > "/etc/apache2/sites-available/$DOMAIN_NAME.conf" << EOF
-<VirtualHost *:80>
-    ServerName $DOMAIN_NAME
-    Redirect / https://$DOMAIN_NAME/
-</VirtualHost>
+# Wait for MySQL to start
+echo "Waiting for MySQL to start..."
+sleep 10
 
-<VirtualHost *:443>
-    ServerName $DOMAIN_NAME
-    DocumentRoot $WEB_ROOT
-
-    SSLEngine on
-    SSLCertificateFile $SSL_CERT
-    SSLCertificateKeyFile $SSL_KEY
-
-    <Directory $WEB_ROOT>
-        Options Indexes FollowSymLinks
-        AllowOverride All
-        Require all granted
-    </Directory>
-</VirtualHost>
+# Set root password and secure MySQL
+echo "Configuring MySQL security..."
+mysql <<EOF
+ALTER USER 'root'@'localhost' IDENTIFIED BY '${mysql_root_pass}';
+DELETE FROM mysql.user WHERE User='';
+DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+DROP DATABASE IF EXISTS test;
+DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+FLUSH PRIVILEGES;
 EOF
 
-# Enable site configuration
-a2ensite "$DOMAIN_NAME.conf"
-a2dissite 000-default.conf
+# Create MySQL configuration file for root user access
+cat > /root/.my.cnf <<EOF
+[client]
+user=root
+password=${mysql_root_pass}
+EOF
+chmod 600 /root/.my.cnf
 
-# Restart Apache
-systemctl restart apache2
+# Save MySQL root password to file with restricted access (root only)
+echo "MySQL root password: ${mysql_root_pass}" > /root/mysql_root_password.txt
+chmod 600 /root/mysql_root_password.txt
 
-# Configure MySQL
-echo "Configuring MySQL..."
-mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_ROOT_PASSWORD';"
-mysql -u root -p"$MYSQL_ROOT_PASSWORD" -e "DELETE FROM mysql.user WHERE User='';"
-mysql -u root -p"$MYSQL_ROOT_PASSWORD" -e "DROP DATABASE IF EXISTS test;"
-mysql -u root -p"$MYSQL_ROOT_PASSWORD" -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\_%';"
-mysql -u root -p"$MYSQL_ROOT_PASSWORD" -e "FLUSH PRIVILEGES;"
+# Create database and user for HESK
+echo "Creating database and user for HESK..."
+mysql --defaults-extra-file=/root/.my.cnf <<EOF
+CREATE DATABASE ${mysql_db} CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
+CREATE USER '${mysql_user}'@'localhost' IDENTIFIED BY '${mysql_pass}';
+GRANT ALL PRIVILEGES ON ${mysql_db}.* TO '${mysql_user}'@'localhost';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, INDEX, ALTER ON ${mysql_db}.* TO '${mysql_user}'@'localhost';
+GRANT CREATE TEMPORARY TABLES ON ${mysql_db}.* TO '${mysql_user}'@'localhost';
+FLUSH PRIVILEGES;
+EOF
 
-# Create HESK database and user
-echo "Creating HESK database..."
-mysql -u root -p"$MYSQL_ROOT_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS $HESK_DB_NAME;"
-mysql -u root -p"$MYSQL_ROOT_PASSWORD" -e "CREATE USER IF NOT EXISTS '$HESK_DB_USER'@'localhost' IDENTIFIED BY '$HESK_DB_PASSWORD';"
-mysql -u root -p"$MYSQL_ROOT_PASSWORD" -e "GRANT ALL PRIVILEGES ON $HESK_DB_NAME.* TO '$HESK_DB_USER'@'localhost';"
-mysql -u root -p"$MYSQL_ROOT_PASSWORD" -e "FLUSH PRIVILEGES;"
+# Verify MySQL user permissions
+echo "Verifying MySQL user permissions..."
+mysql --defaults-extra-file=/root/.my.cnf -e "SHOW GRANTS FOR '${mysql_user}'@'localhost';"
 
 # Extract HESK
-echo "Installing HESK..."
+echo "Extracting HESK..."
 cp hesk352.zip /tmp/
-unzip -o /tmp/hesk352.zip -d "$WEB_ROOT"
+unzip -o /tmp/hesk352.zip -d /var/www/html/
+rm -f /tmp/hesk352.zip
 
 # Set permissions
-chown -R www-data:www-data "$HESK_DIR"
+echo "Setting permissions..."
+chown -R www-data:www-data /var/www/html
+chmod -R 755 /var/www/html
+mkdir -p /var/www/html/attachments
+mkdir -p /var/www/html/cache
+chmod -R 777 /var/www/html/attachments
+chmod -R 777 /var/www/html/cache
 
-# Configure Apache for HESK
-cat > "/etc/apache2/sites-available/hesk.conf" << EOF
+# Generate self-signed SSL certificate
+echo "Generating self-signed SSL certificate..."
+mkdir -p ${apache_cert_dir}/{certs,private}
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+   -keyout ${apache_cert_dir}/private/hesk.key \
+   -out ${apache_cert_dir}/certs/hesk.crt \
+   -subj "/C=AB/ST=Sukhum Dist./L=Sukhum/O=SBRA/CN=hesk.local"
+
+# Configure SSL for Apache
+echo "Configuring SSL for Apache..."
+a2enmod ssl
+cat > /etc/apache2/sites-available/hesk.conf <<EOF
 <VirtualHost *:443>
-    ServerName $DOMAIN_NAME
-    DocumentRoot $HESK_DIR
+    ServerName $(hostname -f)
+    DocumentRoot /var/www/html
 
     SSLEngine on
-    SSLCertificateFile $SSL_CERT
-    SSLCertificateKeyFile $SSL_KEY
+    SSLCertificateFile ${apache_cert_dir}/certs/hesk.crt
+    SSLCertificateKeyFile ${apache_cert_dir}/private/hesk.key
 
-    <Directory $HESK_DIR>
+    <Directory /var/www/html>
         Options Indexes FollowSymLinks
         AllowOverride All
         Require all granted
     </Directory>
 
-    ErrorLog \${APACHE_LOG_DIR}/error.log
-    CustomLog \${APACHE_LOG_DIR}/access.log combined
+    ErrorLog \${APACHE_LOG_DIR}/hesk_error.log
+    CustomLog \${APACHE_LOG_DIR}/hesk_access.log combined
 </VirtualHost>
 EOF
-
-# Enable HESK configuration
 a2ensite hesk.conf
 
-# Final Apache restart
-systemctl restart apache2
+# Configure timezone
+echo "Configuring timezone..."
+sed -i "s/^;*\s*date\.timezone\s*=.*/date.timezone = Europe\/Moscow/" /etc/php/*/apache2/php.ini
 
-echo "HESK installation completed!"
-echo "Please configure parameters in $HESK_DIR/hesk_settings.inc.php" 
+# Configure Firewall
+echo "Configuring firewall..."
+ufw allow 22/tcp
+ufw allow 443/tcp
+ufw --force enable
+
+# Start services
+echo "Starting services..."
+systemctl enable --now apache2 mysql
+
+# Final information
+echo "HESK has been successfully installed!"
+echo "To complete the installation, please follow these steps:"
+echo "1. Access the installation wizard at: https://hesk_IP/install/"
+echo "2. Follow the installation wizard steps"
+echo "3. Use the following database parameters when prompted:"
+echo "   Database: ${mysql_db}"
+echo "   User: ${mysql_user}"
+echo "   Password: ${mysql_pass}"
+echo "4. After installation is complete, delete the 'install' directory"
+echo "5. MySQL root password is stored in: /root/mysql_root_password.txt"
+echo "6. If you encounter database connection issues, verify the MySQL user and password:"
+echo "   mysql -u ${mysql_user} -p${mysql_pass} ${mysql_db}" 
