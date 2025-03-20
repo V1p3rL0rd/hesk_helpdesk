@@ -1,128 +1,150 @@
 #!/bin/bash
 
-# Configuration parameters
-DOMAIN_NAME="example.com"
-MYSQL_ROOT_PASSWORD="dbroot_12345"
-HESK_DB_NAME="hesk"
-HESK_DB_USER="hesk"
-HESK_DB_PASSWORD="Hesk_12345"
-WEB_ROOT="/var/www/html"
-HESK_DIR="/var/www/html/hesk"
-SSL_CERT="/etc/ssl/certs/apache-selfsigned.crt"
-SSL_KEY="/etc/ssl/private/apache-selfsigned.key"
+# Check for root privileges
+if [ "$EUID" -ne 0 ]; then
+   echo "Warning! This script must be run as root!"
+   exit 1
+fi
 
-# System update
-echo "Updating system..."
+# Configuration variables
+mysql_db="hesk"
+mysql_user="hesk"
+mysql_pass="hesk_password"
+mysql_root_pass=$(openssl rand -base64 24)
+apache_cert_dir="/etc/pki/tls"
+firewall_ports=("22/tcp" "443/tcp")
+
+# Check if HESK archive exists
+if [ ! -f hesk352.zip ]; then
+    echo "Error: hesk352.zip not found in current directory!"
+    echo "Please place hesk352.zip in the same directory as this script."
+    exit 1
+fi
+
+# Update system packages
+echo "Updating system packages..."
 dnf update -y
 
 # Install EPEL repository
 echo "Installing EPEL repository..."
 dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
 
+# Enable CodeReady Builder repository
+echo "Enabling CodeReady Builder repository..."
+subscription-manager repos --enable codeready-builder-for-rhel-9-x86_64-rpms
+
 # Install required packages
 echo "Installing required packages..."
-dnf install -y httpd mysql-server php php-mysqlnd php-cli php-curl php-gd \
-    php-mbstring php-xml php-xmlrpc unzip phpMyAdmin mod_ssl
+dnf install -y httpd mysql-server mysql php php-mysqlnd php-gd php-xml php-bcmath \
+    php-mbstring php-ldap php-zip mod_ssl openssl unzip
 
-# Start and enable services
-echo "Starting and enabling services..."
-systemctl enable --now httpd
+# Create Apache user if not exists
+if ! id -u apache >/dev/null 2>&1; then
+    useradd -r -s /sbin/nologin apache
+fi
+
+# Create web root directory
+echo "Creating web root directory..."
+mkdir -p /var/www/html
+chown apache:apache /var/www/html
+chmod 755 /var/www/html
+
+# Start MySQL
+echo "Starting MySQL service..."
 systemctl enable --now mysqld
 
-# Create self-signed SSL certificate
-echo "Creating SSL certificate..."
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-    -keyout "$SSL_KEY" -out "$SSL_CERT" \
-    -subj "/CN=$DOMAIN_NAME"
+# Wait for MySQL to start
+echo "Waiting for MySQL to start..."
+sleep 10
 
-# Configure Apache
-echo "Configuring Apache..."
-cat > "/etc/httpd/conf.d/$DOMAIN_NAME.conf" << EOF
-<VirtualHost *:80>
-    ServerName $DOMAIN_NAME
-    Redirect / https://$DOMAIN_NAME/
-</VirtualHost>
+# Configure MySQL security
+echo "Configuring MySQL security..."
+mysql_secure_installation <<EOF
 
-<VirtualHost *:443>
-    ServerName $DOMAIN_NAME
-    DocumentRoot $WEB_ROOT
-
-    SSLEngine on
-    SSLCertificateFile $SSL_CERT
-    SSLCertificateKeyFile $SSL_KEY
-
-    <Directory $WEB_ROOT>
-        Options Indexes FollowSymLinks
-        AllowOverride All
-        Require all granted
-    </Directory>
-</VirtualHost>
+y
+${mysql_root_pass}
+${mysql_root_pass}
+y
+y
+y
+y
 EOF
+
+# Create MySQL configuration file for root user access
+cat > /root/.my.cnf <<EOF
+[client]
+user=root
+password=${mysql_root_pass}
+EOF
+chmod 600 /root/.my.cnf
+
+# Save MySQL root password to file with restricted access (root only)
+echo "MySQL root password: ${mysql_root_pass}" > /root/mysql_root_password.txt
+chmod 600 /root/mysql_root_password.txt
+
+# Create database and user for HESK
+echo "Creating database and user for HESK..."
+mysql --defaults-extra-file=/root/.my.cnf <<EOF
+CREATE DATABASE ${mysql_db} CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
+CREATE USER '${mysql_user}'@'localhost' IDENTIFIED BY '${mysql_pass}';
+GRANT ALL PRIVILEGES ON ${mysql_db}.* TO '${mysql_user}'@'localhost';
+FLUSH PRIVILEGES;
+EOF
+
+# Extract HESK
+echo "Extracting HESK..."
+cp hesk352.zip /tmp/
+unzip -o /tmp/hesk352.zip -d /var/www/html/
+rm -f /tmp/hesk352.zip
+
+# Set permissions
+echo "Setting permissions..."
+chown -R apache:apache /var/www/html
+chmod -R 755 /var/www/html
+mkdir -p /var/www/html/attachments
+mkdir -p /var/www/html/cache
+chmod -R 777 /var/www/html/attachments
+chmod -R 777 /var/www/html/cache
+
+# Generate self-signed SSL certificate
+echo "Generating self-signed SSL certificate..."
+mkdir -p ${apache_cert_dir}/{certs,private}
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+   -keyout ${apache_cert_dir}/private/hesk.key \
+   -out ${apache_cert_dir}/certs/hesk.crt \
+   -subj "/C=AB/ST=Sukhum Dist./L=Sukhum/O=SBRA/CN=hesk.local"
+
+# Configure SSL for Apache
+echo "Configuring SSL for Apache..."
+sed -i "s|^SSLCertificateFile .*|SSLCertificateFile ${apache_cert_dir}/certs/hesk.crt|" /etc/httpd/conf.d/ssl.conf
+sed -i "s|^SSLCertificateKeyFile .*|SSLCertificateKeyFile ${apache_cert_dir}/private/hesk.key|" /etc/httpd/conf.d/ssl.conf
+
+# Configure timezone
+echo "Configuring timezone..."
+sed -i "s/^;*\s*date\.timezone\s*=.*/date.timezone = Europe\/Moscow/" /etc/php.ini
+
+# Configure Firewall
+echo "Configuring firewall..."
+for port in "${firewall_ports[@]}"; do
+    firewall-cmd --permanent --add-port=${port}
+done
+firewall-cmd --reload
 
 # Configure SELinux
 echo "Configuring SELinux..."
-setsebool -P httpd_can_network_connect on
-setsebool -P httpd_can_network_relay on
-chcon -R -t httpd_sys_content_t $WEB_ROOT
+setsebool -P httpd_can_network_connect 1
+setsebool -P httpd_can_network_relay 1
+setsebool -P httpd_unified 1
 
-# Configure MySQL
-echo "Configuring MySQL..."
-mysql_secure_installation << EOF
+# Start services
+echo "Starting services..."
+systemctl enable --now httpd mysqld
 
-y
-$MYSQL_ROOT_PASSWORD
-$MYSQL_ROOT_PASSWORD
-y
-y
-y
-y
-EOF
-
-# Create HESK database and user
-echo "Creating HESK database..."
-mysql -u root -p"$MYSQL_ROOT_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS $HESK_DB_NAME;"
-mysql -u root -p"$MYSQL_ROOT_PASSWORD" -e "CREATE USER IF NOT EXISTS '$HESK_DB_USER'@'localhost' IDENTIFIED BY '$HESK_DB_PASSWORD';"
-mysql -u root -p"$MYSQL_ROOT_PASSWORD" -e "GRANT ALL PRIVILEGES ON $HESK_DB_NAME.* TO '$HESK_DB_USER'@'localhost';"
-mysql -u root -p"$MYSQL_ROOT_PASSWORD" -e "FLUSH PRIVILEGES;"
-
-# Extract HESK
-echo "Installing HESK..."
-cp hesk352.zip /tmp/
-unzip -o /tmp/hesk352.zip -d "$WEB_ROOT"
-
-# Set permissions
-chown -R apache:apache "$HESK_DIR"
-chmod -R 755 "$HESK_DIR"
-
-# Configure Apache for HESK
-cat > "/etc/httpd/conf.d/hesk.conf" << EOF
-<VirtualHost *:443>
-    ServerName $DOMAIN_NAME
-    DocumentRoot $HESK_DIR
-
-    SSLEngine on
-    SSLCertificateFile $SSL_CERT
-    SSLCertificateKeyFile $SSL_KEY
-
-    <Directory $HESK_DIR>
-        Options Indexes FollowSymLinks
-        AllowOverride All
-        Require all granted
-    </Directory>
-
-    ErrorLog logs/hesk_error.log
-    CustomLog logs/hesk_access.log combined
-</VirtualHost>
-EOF
-
-# Configure firewall
-echo "Configuring firewall..."
-firewall-cmd --permanent --add-service=http
-firewall-cmd --permanent --add-service=https
-firewall-cmd --reload
-
-# Restart Apache
-systemctl restart httpd
-
-echo "HESK installation completed!"
-echo "Please configure parameters in $HESK_DIR/hesk_settings.inc.php" 
+# Final information
+echo "HESK has been successfully installed!"
+echo "To access the web interface: https://$(hostname -f)"
+echo "MySQL root password is stored in: /root/mysql_root_password.txt"
+echo "Database parameters:"
+echo "  Database: ${mysql_db}"
+echo "  User: ${mysql_user}"
+echo "  Password: ${mysql_pass}" 
