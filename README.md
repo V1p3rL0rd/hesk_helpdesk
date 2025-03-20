@@ -23,8 +23,8 @@ This repository contains installation scripts for deploying HESK Help Desk syste
 
 1. Clone this repository:
 ```bash
-git clone https://github.com/yourusername/hesk-installation.git
-cd hesk-installation
+git clone https://github.com/V1p3rL0rd/hesk_helpdesk.git
+cd hesk_helpdesk
 ```
 
 2. Make the installation script executable:
@@ -85,21 +85,13 @@ sudo ./install_hesk_rhel.sh
    - Check SELinux logs: `tail -f /var/log/audit/audit.log`
    - Verify SELinux contexts
 
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a new Pull Request
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
 ## Acknowledgments
 
 - HESK Help Desk System
 - Apache HTTP Server
 - MySQL
 - PHP 
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
