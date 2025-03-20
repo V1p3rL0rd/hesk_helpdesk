@@ -142,9 +142,12 @@ systemctl enable --now httpd mysqld
 
 # Final information
 echo "HESK has been successfully installed!"
-echo "To access the web interface: https://$(hostname -f)"
-echo "MySQL root password is stored in: /root/mysql_root_password.txt"
-echo "Database parameters:"
-echo "  Database: ${mysql_db}"
-echo "  User: ${mysql_user}"
-echo "  Password: ${mysql_pass}" 
+echo "To complete the installation, please follow these steps:"
+echo "1. Access the installation wizard at: https://hesk-IP/install/"
+echo "2. Follow the installation wizard steps"
+echo "3. Use the following database parameters when prompted:"
+echo "   Database: ${mysql_db}"
+echo "   User: ${mysql_user}"
+echo "   Password: ${mysql_pass}"
+echo "4. After installation is complete, delete the 'install' directory"
+echo "5. MySQL root password is stored in: /root/mysql_root_password.txt" 
