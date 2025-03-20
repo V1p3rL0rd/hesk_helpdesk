@@ -57,17 +57,15 @@ systemctl enable --now mysqld
 echo "Waiting for MySQL to start..."
 sleep 10
 
-# Configure MySQL security
+# Set root password and secure MySQL
 echo "Configuring MySQL security..."
-mysql_secure_installation <<EOF
-
-n
-${mysql_root_pass}
-${mysql_root_pass}
-y
-y
-y
-y
+mysql <<EOF
+ALTER USER 'root'@'localhost' IDENTIFIED BY '${mysql_root_pass}';
+DELETE FROM mysql.user WHERE User='';
+DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+DROP DATABASE IF EXISTS test;
+DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+FLUSH PRIVILEGES;
 EOF
 
 # Create MySQL configuration file for root user access
