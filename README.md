@@ -54,9 +54,8 @@ sudo ./install_hesk_rhel.sh
 
 ## Post-Installation
 
-1. Configure HESK settings in `$HESK_DIR/hesk_settings.inc.php`
-2. Access your HESK installation at `https://your-domain.com`
-3. Complete the web-based installation wizard
+1. Access your HESK installation at `http://your-domain.com/install`
+2. Complete the web-based installation wizard
 
 ## Security Notes
 
