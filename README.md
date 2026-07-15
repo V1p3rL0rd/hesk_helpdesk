@@ -56,6 +56,7 @@ sudo ./install_hesk_rhel.sh
 
 1. Access your HESK installation at `http://your-domain.com/install`
 2. Complete the web-based installation wizard
+3. Remove install scripts using rm -rf /var/www/html/install/
 
 ## Security Notes
 
