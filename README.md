@@ -38,8 +38,6 @@ chmod +x install_hesk_rhel.sh
 
 3. Edit the configuration parameters in the script:
 ```bash
-DOMAIN_NAME="example.com"
-MYSQL_ROOT_PASSWORD="dbroot_12345"
 HESK_DB_NAME="hesk"
 HESK_DB_USER="hesk"
 HESK_DB_PASSWORD="Hesk_12345"
